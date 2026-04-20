@@ -1,0 +1,17 @@
+[Unit]
+Description=YouTube Auto-Uploader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/yt_uploader
+ExecStart=/opt/yt_uploader/venv/bin/python /opt/yt_uploader/main.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/yt_uploader.log
+StandardError=append:/var/log/yt_uploader.log
+
+[Install]
+WantedBy=multi-user.target

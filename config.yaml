@@ -1,0 +1,17 @@
+# Add one entry per channel. Duplicate the block.
+# drive_folder_id: the long ID in the Drive folder's URL
+#   https://drive.google.com/drive/folders/<THIS_PART>
+# category_id: YouTube category. Common ones:
+#   '22' People & Blogs, '24' Entertainment, '25' News, '27' Education, '28' Science & Tech
+# ai_hint: one sentence that tells the AI what this channel is about (improves metadata).
+
+channels:
+  - name: wiserice
+    drive_folder_id: PASTE_FOLDER_ID_HERE
+    category_id: "22"
+    ai_hint: "Channel about speedrunning, gaming culture, and retro games."
+
+  # - name: second_channel
+  #   drive_folder_id: PASTE_OTHER_FOLDER_ID
+  #   category_id: "27"
+  #   ai_hint: "Educational channel about economics and investing."
