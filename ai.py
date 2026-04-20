@@ -1,5 +1,5 @@
 """
-AI metadata generation. Sends transcript, gets back {title, description, tags}.
+AI metadata generation. Sends transcript (or hint), gets back {title, description, tags}.
 Uses Anthropic by default (set ANTHROPIC_API_KEY). Falls back to OpenAI if
 OPENAI_API_KEY is set instead.
 """
@@ -7,11 +7,12 @@ import json
 import os
 import re
 
-SYSTEM_PROMPT = """You are a YouTube SEO expert. Given a video transcript, produce:
+SYSTEM_PROMPT = """You are a YouTube SEO expert. Given either a full video transcript
+or a short topic hint, produce:
 1. A click-worthy SEO title (max 90 chars, no clickbait lies)
 2. A detailed description (2-3 paragraphs, written in first person like "In this video I...")
    - Start with a hook
-   - Cover the main points from the transcript
+   - Cover the main points
    - End with 3-5 relevant hashtags (#example)
 3. A list of 15-25 YouTube tags (comma-separated strings, each tag 1-4 words)
 
@@ -23,13 +24,25 @@ CRITICAL: Respond with ONLY valid JSON, no markdown fences, no preamble. Schema:
 }"""
 
 
-def generate_metadata(transcript, channel_hint=""):
-    """Returns dict {title, description, tags}. channel_hint adds context."""
-    # Truncate transcript to stay under context limits (~80k chars is safe)
-    transcript = transcript[:80000]
-    user_msg = (
-        f"Channel context: {channel_hint}\n\n" if channel_hint else ""
-    ) + f"Transcript:\n{transcript}"
+def generate_metadata(transcript="", channel_hint="", video_hint=""):
+    """
+    Returns dict {title, description, tags}.
+
+    - transcript: full transcript text (with_script mode). Primary source.
+    - channel_hint: persistent channel context from config.yaml.
+    - video_hint: one-off per-video hint from the editor (with_hint mode).
+
+    At least one of transcript or video_hint should be non-empty for useful output.
+    """
+    transcript = (transcript or "")[:80000]  # stay under context limits
+    parts = []
+    if channel_hint:
+        parts.append(f"Channel context: {channel_hint}")
+    if video_hint:
+        parts.append(f"Editor's note for this video: {video_hint}")
+    if transcript:
+        parts.append(f"Transcript:\n{transcript}")
+    user_msg = "\n\n".join(parts) if parts else "Generate generic metadata for an untitled video."
 
     if os.getenv("ANTHROPIC_API_KEY"):
         return _call_anthropic(user_msg)
@@ -67,10 +80,8 @@ def _call_openai(user_msg):
 
 
 def _parse_json(text):
-    # Strip markdown fences if model ignored instructions
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
     data = json.loads(text)
-    # Sanitize
     if not isinstance(data.get("tags"), list):
         data["tags"] = []
     data["title"] = str(data.get("title", "Untitled"))[:95]

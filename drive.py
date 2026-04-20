@@ -1,6 +1,5 @@
-"""Drive operations: list MP4s, find matching TXT, download, read text."""
+"""Drive operations: metadata, download, read text."""
 import io
-import os
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -17,38 +16,17 @@ class DriveClient:
                 f.write(creds.to_json())
         self.service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-    def list_mp4s(self, folder_id):
-        """Return list of {id, name, size} for MP4s in folder (not in trash)."""
-        q = (
-            f"'{folder_id}' in parents "
-            f"and mimeType='video/mp4' "
-            f"and trashed=false"
-        )
-        resp = self.service.files().list(
-            q=q,
-            fields="files(id, name, size, createdTime)",
-            pageSize=100,
-            orderBy="createdTime",
+    def get_file_metadata(self, file_id):
+        """Return {id, name, size, mimeType} or raise if not accessible."""
+        return self.service.files().get(
+            fileId=file_id,
+            fields="id, name, size, mimeType",
+            supportsAllDrives=True,
         ).execute()
-        return resp.get("files", [])
-
-    def find_txt(self, folder_id, base_name):
-        """Find <base_name>.txt in the same folder. Returns file dict or None."""
-        txt_name = f"{base_name}.txt"
-        q = (
-            f"'{folder_id}' in parents "
-            f"and name='{txt_name}' "
-            f"and trashed=false"
-        )
-        resp = self.service.files().list(
-            q=q, fields="files(id, name)", pageSize=1
-        ).execute()
-        files = resp.get("files", [])
-        return files[0] if files else None
 
     def download(self, file_id, dest_path):
         """Download a file to local disk in chunks."""
-        request = self.service.files().get_media(fileId=file_id)
+        request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
         with io.FileIO(dest_path, "wb") as fh:
             downloader = MediaIoBaseDownload(fh, request, chunksize=10 * 1024 * 1024)
             done = False
@@ -57,7 +35,7 @@ class DriveClient:
 
     def read_text(self, file_id):
         """Read a small text file's contents as a string."""
-        request = self.service.files().get_media(fileId=file_id)
+        request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
         buf = io.BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
         done = False
