@@ -1,17 +1,49 @@
-# Add one entry per channel. Duplicate the block.
-# drive_folder_id: the long ID in the Drive folder's URL
-#   https://drive.google.com/drive/folders/<THIS_PART>
-# category_id: YouTube category. Common ones:
-#   '22' People & Blogs, '24' Entertainment, '25' News, '27' Education, '28' Science & Tech
-# ai_hint: one sentence that tells the AI what this channel is about (improves metadata).
+# ---------- Channels ----------
+# internal_name     : YOUR label (matches token filename). Lowercase, underscores.
+# display_codename  : What editors see in the Telegram bot. Use NON-SEQUENTIAL,
+#                     content-neutral codenames. Do NOT use "Project A / B / C"
+#                     or any scheme that leaks how many channels you run or
+#                     their order. Pick unrelated words (birds, stars, cities)
+#                     and avoid anything that hints at topic or brand.
+# editor_folder_id  : Drive folder ID inside submissions/ that this project's
+#                     editor uploads into. (For your reference; bot reads any
+#                     link the editor pastes, the folder is a convention.)
+# yt_token_file     : OAuth token for this channel's Google account (YouTube).
+# category_id       : '22' People & Blogs, '24' Entertainment, '25' News,
+#                     '27' Education, '28' Science & Tech
+# ai_hint           : One-sentence channel context for the AI metadata prompt.
 
 channels:
-  - name: wiserice
-    drive_folder_id: PASTE_FOLDER_ID_HERE
+  - internal_name: wiserice
+    display_codename: "Falcon"
+    editor_folder_id: PASTE_FOLDER_ID_HERE
+    yt_token_file: tokens/token_wiserice.json
     category_id: "22"
     ai_hint: "Channel about speedrunning, gaming culture, and retro games."
 
-  # - name: second_channel
-  #   drive_folder_id: PASTE_OTHER_FOLDER_ID
-  #   category_id: "27"
-  #   ai_hint: "Educational channel about economics and investing."
+  # - internal_name: econ_channel
+  #   display_codename: "Meridian"
+  #   editor_folder_id: PASTE_FOLDER_ID_HERE
+  #   yt_token_file: tokens/token_econ_channel.json
+  #   category_id: "25"
+  #   ai_hint: "Educational channel about macroeconomics and investing."
+
+
+# ---------- Editors ----------
+# telegram_user_id : Get by messaging @userinfobot on Telegram.
+# display_name     : How the bot addresses them ("Hi <name>."). Internal only.
+# projects         : List of display_codenames the editor is authorized for.
+#                    Use ["*"] for admin (access to all projects).
+
+editors:
+  - telegram_user_id: 123456789
+    display_name: "NY"
+    projects: ["*"]
+
+  # - telegram_user_id: 222222222
+  #   display_name: "Editor A"
+  #   projects: ["Falcon"]
+
+  # - telegram_user_id: 333333333
+  #   display_name: "Editor B"
+  #   projects: ["Meridian", "Atlas"]
