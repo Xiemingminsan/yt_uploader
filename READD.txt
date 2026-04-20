@@ -1,0 +1,983 @@
+[4/10/2026 12:37 AM] Ÿosęf ‎ ‎ ‎ ‎ ‎ T: # YouTube Automation Pipeline — Concept Document v2
+
+> An n8n workflow that takes an MP4 from Google Drive and handles everything through to a published YouTube video with AI-generated metadata.
+
+---
+
+## Overview
+
+A fully automated pipeline built on n8n that monitors Google Drive folders for new video uploads, generates SEO-optimised YouTube metadata using AI, uploads the video, and notifies via Telegram — all without manual intervention.
+
+Designed for small-volume, multi-channel publishing (1-2 videos per day per channel).
+
+Hosted on a dedicated DigitalOcean droplet running n8n self-hosted (Community Edition).
+
+---
+
+## How It Works
+
+New MP4 uploaded to Google Drive folder
+            |
+Already processed? (Google Sheets log check)
+  YES -> Stop (duplicate protection)
+            | NO
+Matching .txt transcript found?
+  NO  -> Telegram alert: "Missing transcript for [filename]" -> Stop
+            | YES
+Download MP4 + TXT from Drive
+            |
+Force MIME type to video/mp4 (Code node)
+            |
+Upload MP4 to YouTube (set to Private)
+            |
+Log YouTube video ID + filename to Google Sheets immediately
+            |
+Feed TXT transcript to AI
+  -> Generate: Title, Description, Tags
+  -> Append hardcoded music/copyright credits to description
+            |
+Update YouTube video metadata
+            |
+Update Google Sheets row (add YouTube URL, title, final status)
+            |
+Delete local MP4 binary from n8n filesystem (disk cleanup)
+            |
+Telegram notification: "Channel A: [title] uploaded — youtube.com/watch?v=xxx"
+
+---
+
+## Multi-Channel Structure
+
+Each YouTube channel gets its own dedicated Google Drive subfolder, its own n8n workflow, and its own Google Cloud project (for independent API quotas).
+
+Google Drive — Uploads
+  Channel A — 
+  Channel B —  
+  Channel C —
+
+Each folder maps to:
+
+- One n8n workflow
+- One Google Cloud project (separate API quota per channel)
+- One YouTube OAuth account
+- One AI prompt (customised per channel tone)
+- One hardcoded copyright/music block
+
+---
+
+## API Quota — Important
+
+YouTube Data API v3 quota is 10,000 units per day per Google Cloud project. A video upload costs 1,600 units. A metadata update costs 50 units. That gives roughly 6 uploads per day per project.
+
+The quota is tied to the GCP project, not the YouTube channel. If all channels share one project, they share one 10,000-unit pool. To avoid this, create a separate GCP project for each channel. Each project gets its own isolated 10,000-unit allocation.
+
+At 1-2 videos per channel per day, this is comfortable headroom. No quota increase request needed.
+
+Quota resets at midnight Pacific Time daily.
+
+---
+
+## File Naming Convention
+
+Whoever uploads must name the MP4 and TXT identically (different extensions only).
+
+interview_ep5.mp4
+interview_ep5.txt
+
+interview_ep5.mp4
+interview_ep5_transcript.txt   <- won't match
+
+The workflow strips the extension and matches by filename. Simple rule, zero ambiguity.
+
+---
+
+## AI Metadata Generation
+
+The TXT transcript is passed to an AI model with a prompt customised per channel. Example prompt structure:
+
+You are a YouTube SEO expert for a [Gaming] channel.
+
+Given the transcript below, generate:
+1. A compelling YouTube title (max 60 characters)
+2. An SEO-optimised description (3-4 paragraphs)
+3. 10-15 relevant tags as a comma-separated list
+
+Always append the following to the end of every description:
+
+---
+Music
+Track: [Track Name] by [Artist]
+Licensed via Artlist — artlist.io/license
+---
+
+Transcript:
+{transcript_text}
+
+Each channel workflow has its own version of this prompt with its own music credits, tone, and niche-specific instructions.
+
+---
+
+## Google Sheets Log
+
+A single shared Google Sheet acts as the processing ledger. Two-phase logging: video ID is logged immediately after upload (before AI runs), then the row is updated with full metadata after completion.
+
+Purpose:
+[4/10/2026 12:37 AM] Ÿosęf ‎ ‎ ‎ ‎ ‎ T: - Duplicate protection — workflow checks this before processing
+- Orphan recovery — if AI or metadata update fails, the YouTube video ID is already logged so you can find and fix it manually
+- Audit trail — know exactly what was uploaded, when, and to which channel
+- Error log — failed or incomplete jobs are visible at a glance
+
+---
+
+## Telegram Notifications
+
+Three notification types, all sent to a single Telegram bot:
+
+Missing transcript alert:
+
+Channel A — WiseRice
+File: interview_ep5.mp4 was uploaded
+but no matching interview_ep5.txt was found.
+Please upload the transcript to proceed.
+
+Success confirmation:
+
+Channel A — WiseRice
+Title: 5 Things No One Tells You About Speedrunning
+Uploaded: Private (ready to review)
+Link: youtube.com/watch?v=xxxxxxxxx
+
+Error workflow alert (crash/unexpected failure):
+
+WORKFLOW FAILED
+Channel: WiseRice
+Execution ID: 12345
+Failed node: YouTube — Upload Video
+Error: Request failed with status code 400
+Check: your-n8n-domain.com/workflow/executions/12345
+
+---
+
+## Edge Cases Handled
+
+| Scenario | How It's Handled |
+|---|---|
+| Duplicate upload (same filename) | Google Sheets log check — skips if already processed |
+| MP4 uploaded without TXT | IF node detects missing match -> Telegram alert -> workflow stops cleanly |
+| Two videos uploaded at same time | n8n queues executions — processes one at a time |
+| Video goes Public accidentally | All uploads default to Private — manual publish step required |
+| OAuth token expiry | n8n handles token refresh automatically in most cases |
+| Poor quality transcript | AI output reflects input quality — set expectations with uploaders |
+| Large video file timeout | Binary data mode set to filesystem; payload size limit increased (see env vars) |
+| MIME type rejection (400 error) | Code node forces binary MIME type to video/mp4 before upload |
+| Upload succeeds but AI/metadata fails | YouTube video ID is logged to Sheets immediately after upload, before AI runs — orphan videos are recoverable |
+| Mid-execution crash (memory, network) | Dedicated n8n error workflow sends Telegram alert with execution ID and failed node |
+| Quota exceeded (too many uploads) | 403 quotaExceeded error — separate GCP project per channel prevents cross-channel exhaustion |
+| Disk fills up over time | Code node deletes local MP4 binary after successful upload and YouTube video ID verification — keeps droplet disk clean |
+
+---
+
+## Tech Stack
+
+| Component | Tool | Cost |
+|---|---|---|
+| Automation engine | n8n (self-hosted on DigitalOcean) | ~$6/mo (Basic Droplet) |
+| File storage and trigger | Google Drive | Free |
+| Video hosting | YouTube Data API v3 | Free (up to 6 uploads/day per GCP project) |
+| AI metadata generation | OpenAI / Claude API | Pay per use (negligible at this volume) |
+| Logging | Google Sheets | Free |
+| Notifications | Telegram Bot API | Free |
+
+Total monthly cost: ~$6/mo (DigitalOcean droplet). Everything else is free at this volume.
+
+---
+
+## n8n Environment Variables Required
+
+These must be set on the DigitalOcean droplet's n8n Docker config to handle large video files without crashing:
+
+N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+N8N_PAYLOAD_SIZE_MAX=1600
+
+filesystem mode writes binary data to disk instead of holding it in memory. Without this, large MP4s will crash the workflow. PAYLOAD_SIZE_MAX is in MB — set to at least the size of your largest expected video file.
+
+---
+
+## DigitalOcean Setup
+
+Droplet spec: Basic Droplet, 1 GB RAM / 1 vCPU / 25 GB SSD (~$6/mo). Sufficient for 1-1.5GB videos since filesystem binary mode writes to disk (not RAM) and the cleanup node deletes files after each upload. Resize to 2GB if needed — DigitalOcean supports live resize.
+## n8n Nodes Required (per workflow)
+[4/10/2026 12:37 AM] Ÿosęf ‎ ‎ ‎ ‎ ‎ T: 1. Google Drive Trigger — watches folder for new .mp4 files
+2. Google Sheets — Read — duplicate check by filename
+3. Google Drive — Search — find matching .txt file
+4. IF Node — TXT found or not?
+5. Telegram Node — missing TXT alert (on NO branch)
+6. Google Drive — Download — get MP4 binary
+7. Google Drive — Download — get TXT content
+8. Code Node — force MIME type to video/mp4 on binary data
+9. YouTube — Upload Video — upload MP4 as Private
+10. Google Sheets — Append Row — log YouTube video ID immediately (safety net)
+11. AI / HTTP Request Node — send transcript to AI, receive title/desc/tags
+12. YouTube — Update Video — apply metadata to uploaded video
+13. Google Sheets — Update Row — update log with final URL, title, status
+14. Telegram Node — success notification with YouTube link
+15. Code Node — delete local MP4 binary from n8n filesystem after successful upload and verification
+
+Plus: one separate error workflow (2-3 nodes) that sends Telegram alert on any crash.
+
+Total: ~15 nodes per channel workflow + 1 shared error workflow. Setup time: ~3-4 hours.
+
+---
+
+## Setup Checklist
+
+- [ ] Spin up DigitalOcean droplet and install n8n via Docker (see DigitalOcean Setup section)
+- [ ] Create Google Drive folder structure (one subfolder per channel)
+- [ ] Create one Google Cloud project per channel, enable Drive + YouTube APIs on each
+- [ ] Set up YouTube OAuth for each channel under its own GCP project
+- [ ] Create Telegram bot via @BotFather, get token
+- [ ] Set up Google Sheets log with columns: filename, channel, youtube_id, youtube_url, title, timestamp, status
+- [ ] Import base workflow template from n8n.io/workflows/3906
+- [ ] Add Code node for MIME type fix (set binary to video/mp4)
+- [ ] Add immediate post-upload Sheets logging step (youtube_id)
+- [ ] Split Google Sheets interaction into append (after upload) + update (after metadata)
+- [ ] Create error workflow with Telegram notification
+- [ ] Duplicate and customise per channel (credentials + AI prompt + music block)
+- [ ] Test with a small dummy video before going live
+- [ ] Confirm default upload visibility is set to Private
+
+---
+
+## Source Template
+
+Based on: [Automate YouTube uploads with AI-generated metadata from Google Drive](https://n8n.io/workflows/3906-automate-youtube-uploads-with-ai-generated-metadata-from-google-drive/)
+
+Modified to add: manual TXT transcript instead of auto-captions, Google Sheets two-phase deduplication and orphan recovery, Telegram alerts (success + missing transcript + error workflow), MIME type fix, separate GCP project per channel for independent quota, and filesystem binary mode for large file handling.
+
+---
+
+## Future Additions (not in v1)
+
+- Auto-caption fallback: poll YouTube for auto-generated captions after upload (for channels without pre-written scripts). Adds ~4 nodes with a wait/retry loop.
+- Scheduled publish: set a publish date on upload instead of leaving as Private.
+- Thumbnail generation: AI-generated thumbnails applied via YouTube API.
+- Multi-language descriptions: AI generates descriptions in multiple languages.
+
+---
+
+*Concept v2 — April 2026*
+
+
+this was the plan first
+
+
+then 
+
+# HANDOFF — YouTube Auto-Uploader (Bot Trigger Pivot)
+
+**Owner:** Y (NY)
+**Date:** 2026-04-20
+**Status:** Polling version built. Pivoting to Telegram bot trigger before going live.
+
+---
+
+## The goal
+
+A YouTube auto-uploader for multiple channels, triggered by editors sending messages to a Telegram bot. Editor pastes a Google Drive link to the MP4 + the transcript as a text message. Bot uploads the MP4 to YouTube as Private, generates AI metadata (title / description / tags) from the transcript, patches the video, logs to Google Sheets, replies with the YouTube link.
+
+Editors are a trusted, whitelisted group. One bot handles all channels.
+
+---
+
+## Why we pivoted away from Drive polling
+
+The original design polled Drive folders for new MP4 + matching TXT pairs. Two problems killed it:
+
+1. **Race condition.** Editor drops MP4 at 11:00:30, TXT at 11:01:30. Polling at 11:01:00 catches MP4 alone → fires "missing TXT" alert → TXT lands orphaned.
+2. **No explicit "ready" signal.** Editor might be mid-upload, might have uploaded to wrong folder, might have forgotten the TXT. Polling assumes intent from file presence.
+
+Bot trigger fixes both: editor explicitly signals readiness by sending the message. The message **is** the trigger. No ambiguity.
+
+---
+
+## Editor flow (the design, finalized)
+
+Three-step conversation per video:
+
+**Step 1** — editor starts:
+```
+/upload wiserice
+```
+
+**Step 2** — bot replies:
+```
+OK, channel wiserice. Send me the Drive link to the MP4.
+```
+
+Editor sends:
+```
+https://drive.google.com/file/d/1aBcDeF.../view?usp=sharing
+```
+
+**Step 3** — bot replies:
+```
+Got the link. Now paste the transcript as a text message.
+```
+
+Editor sends the full transcript as a text message.
+
+**Step 4** — bot replies:
+```
+Processing... I'll ping you when it's done.
+```
+
+Bot runs the pipeline in background. When finished, bot replies:
+```
+✅ Uploaded (Private)
+Title: <AI-generated title>
+https://youtube.com/watch?v=xxxxx
+```
+
+Or on failure:
+```
+❌ Failed on <step>: <error message>
+```
+
+---
+
+## What already exists (keep untouched)
+
+622 lines of Python across 8 modules. The upload pipeline works. We are **not** rewriting it.
+
+| File | Status | Notes |
+|---|---|---|
+| `youtube.py` | **KEEP AS-IS** | Resumable upload + metadata update. Works. |
+| `ai.py` | **KEEP AS-IS** | Claude Haiku / OpenAI metadata gen. Works. |
+| `sheets.py` | **KEEP AS-IS** | Two-phase logger (orphan recovery). Works. |
+| `telegram.py` | **KEEP AS-IS** | Outbound notifications helper (legacy, only used for admin alerts). |
+| `state.py` | **KEEP AS-IS** | SQLite dedup. Reused by bot to prevent double-processing same file_id. |
+| `auth.py` | **KEEP AS-IS** | One-time OAuth per Google account. |
+| `drive.py` | **MODIFY** | Drop `list_mp4s` + `find_txt` (not needed). Keep `download` + `read_text`. Add `get_file_metadata(file_id)` for validation. |
+| `main.py` | **REPLACE** | Drop the polling loop. New `main.py` = thin bootstrap that starts the bot. |
+
+---
+
+## What changes (the new work)
+
+### New file: `bot.py`
+
+Telegram bot using `python-telegram-bot` v21+ (async). Implements:
+
+- `/start` — welcome + lists channels this user is authorized for
+- `/upload <channel>` — starts the 3-step conversation
+- `/cancel` — aborts current conversation
+- `/status` — (optional, v2) shows last 5 uploads for this user's channels
+
+Uses `ConversationHandler` with two states: `AWAITING_LINK`, `AWAITING_TRANSCRIPT`.
+
+Conversation state stored per-user in `context.user_data` (in-memory, fine for single-process bot).
+
+### New file: `pipeline.py`
+
+Extracted from the old `main.py`. Single function:
+
+```python
+async def run_pipeline(channel_cfg, file_id, transcript, notify_cb):
+    """Download MP4, upload to YT, generate metadata, patch, log, notify."""
+```
+
+`notify_cb` is an async callback the bot passes in so the pipeline can send status updates back to the editor's Telegram chat without importing bot internals. Loose coupling.
+
+### Modified file: `main.py`
+
+Shrinks to ~30 lines. Loads config, env, starts the bot. That's it.
+
+### Modified file: `drive.py`
+
+- Drop `list_mp4s` — no longer needed
+- Drop `find_txt` — transcript comes as text, not a file
+- Keep `download` — still fetches the MP4 binary
+- Drop `read_text` — no TXT files anymore
+- **Add** `get_file_metadata(file_id)` — returns `{name, size, mimeType}` for validation before download (reject non-MP4, check file size, etc.)
+
+### Modified file: `config.yaml`
+
+Add editor whitelist. Each editor's Telegram user_id maps to the channels they can post to:
+
+```yaml
+channels:
+  - name: wiserice
+    category_id: "22"
+    ai_hint: "Channel about speedrunning, gaming culture, retro games."
+  - name: economics_ch
+    category_id: "25"
+    ai_hint: "Channel about macroeconomics and investing."
+
+editors:
+  - telegram_user_id: 123456789     # you
+    name: "NY"
+    channels: ["*"]                  # wildcard = all channels
+  - telegram_user_id: 987654321
+    name: "Editor Bob"
+    channels: ["wiserice"]
+  - telegram_user_id: 555444333
+    name: "Editor Alice"
+    channels: ["wiserice", "economics_ch"]
+```
+
+Removed: `drive_folder_id` per channel (no folders watched anymore).
+
+### Modified file: `.env.example`
+
+Add:
+```
+TELEGRAM_BOT_TOKEN=<same bot or a new one dedicated to uploads>
+TELEGRAM_ADMIN_CHAT_ID=<your personal chat — for crash alerts>
+```
+
+Remove: `POLL_INTERVAL_SEC`, `TXT_GRACE_SEC` (no polling).
+
+### Modified file: `requirements.txt`
+
+Add:
+```
+python-telegram-bot>=21.0
+```
+
+**Rename collision:** the existing `telegram.py` will now shadow the `python-telegram-bot` package's `telegram` module. **Rename `telegram.py` → `notify.py`** and update the one import in `main.py`/`pipeline.py`.
+
+---
+
+## Technical design details
+
+### Drive link parser
+
+Accept any of:
+- `https://drive.google.com/file/d/FILE_ID/view?usp=sharing`
+- `https://drive.google.com/file/d/FILE_ID/view`
+- `https://drive.google.com/open?id=FILE_ID`
+- `https://drive.google.com/uc?id=FILE_ID`
+- bare `FILE_ID`
+
+Implementation: regex for `/d/([a-zA-Z0-9_-]+)` and `[?&]id=([a-zA-Z0-9_-]+)`, fallback to `[a-zA-Z0-9_-]{20,}` for bare IDs. Validate the extracted ID actually resolves in Drive before proceeding (call `get_file_metadata`).
+
+### Which Drive account does the bot use?
+
+The bot needs to read the MP4. Simplest model: **one shared "bot Drive account"** whose OAuth token is at `tokens/token_drive.json`. Editors share their upload folders (or individual files) with that account's email. Bot reads from wherever the shared file lives.
+
+**Why not use per-channel tokens for Drive?** Editors might work across channels, upload to their own drives, etc. A shared reader account is simpler.
+
+**YouTube tokens are still per-channel** — each YouTube channel needs its own OAuth token at `tokens/token_<channel>.json` for the upload step. No change there.
+
+### Authorization check
+
+Every message from a non-whitelisted user gets a flat "not authorized" reply. Every `/upload <channel>` checks the editor is approved for that specific channel.
+
+### Concurrency
+
+Per-user: only one active conversation at a time (ConversationHandler enforces this naturally).
+
+Globally: uploads run in background tasks via `asyncio.create_task`. Pipeline already handles retries + errors internally. No explicit queue needed for v1 — if 5 uploads fire at once, they run in parallel. YouTube quota per-channel is ~6 uploads/day; parallelism is fine.
+
+v2 improvement (not in scope now): a proper queue if we ever need throttling.
+
+### Background upload + progress updates
+
+```python
+async def start_upload_task(channel, file_id, transcript, chat_id, bot):
+    async def notify(msg):
+        await bot.send_message(chat_id=chat_id, text=msg)
+    try:
+        await run_pipeline(channel, file_id, transcript, notify)
+    except Exception as e:
+        await notify(f"❌ Failed: {e}")
+        # also ping admin
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"[{channel}] crash: {e}")
+```
+
+### State / dedup
+
+`state.py` still used — keyed by Drive `file_id`. If an editor sends the same link twice, bot replies "Already uploaded on <date> → <YouTube URL>" and doesn't reprocess.
+
+### Systemd
+
+`yt_uploader.service` doesn't change — same `ExecStart`, just runs the new `main.py`.
+
+---
+
+## What's explicitly out of scope for this iteration
+
+- Multi-part transcripts (editor sends transcript in chunks)
+- File upload via Telegram directly (editor sends MP4 as Telegram attachment instead of Drive link) — Telegram caps at 50MB, so Drive stays
+- Web dashboard
+- Scheduled publishing (videos always go up as Private)
+- Thumbnail generation
+- Auto-caption fallback (no transcript path)
+- Editor self-service (adding channels, etc.) — config.yaml stays manual
+
+---
+
+## Acceptance criteria
+
+The bot is "done" when:
+
+1. An authorized editor can run `/upload <channel>`, paste a Drive link, paste transcript, and the video appears in the correct YouTube channel as Private with AI-generated title/description/tags within ~5 minutes.
+2. Unauthorized users get rejected with clear messages.
+3. Editors only see / can upload to channels they're whitelisted for.
+4. A failed pipeline sends a clear error to the editor AND an admin alert.
+5. A duplicate link sent by the same or different editor is caught and reported, not re-uploaded.
+6. Bot survives network flake, restart, and OAuth token refresh without manual intervention.
+7. Systemd restarts the bot on crash.
+
+---
+
+## Test plan (CC should verify)
+
+1. Drive link parser: unit test all 5 URL formats + invalid inputs
+2. Unauthorized user → `/upload` → reject
+3. Authorized user wrong channel → reject
+4. Happy path end-to-end with a small test MP4
+5. Duplicate submission → reject with prior URL
+6. Pipeline failure (e.g. bad MP4) → error surfaced to editor
+7. Bot restart mid-upload → task should complete (caveat: background tasks don't survive restart; acceptable for v1, document it)
+
+---
+
+## File tree after the work
+
+```
+yt_uploader/
+├── main.py               ~30 lines, starts the bot
+├── bot.py                NEW — Telegram bot, conversation handler
+├── pipeline.py           NEW — upload pipeline (extracted)
+├── auth.py               unchanged
+├── drive.py              simplified
+├── youtube.py            unchanged
+├── ai.py                 unchanged
+├── sheets.py             unchanged
+├── state.py              unchanged
+├── notify.py             RENAMED from telegram.py (admin alerts only)
+├── config.yaml           adds editors list, removes drive_folder_id
+├── .env.example          adds admin chat id, drops poll vars
+├── requirements.txt      adds python-telegram-bot
+├── yt_uploader.service   unchanged
+├── README.md             update to describe bot flow (not polling)
+├── HANDOFF.md            this file
+└── CC_PROMPT.md          prompt for Claude Code
+```
+
+
+# Claude Code Prompt — YouTube Uploader Bot Pivot
+
+Copy everything below this line and paste into a fresh Claude Code session in the `yt_uploader/` directory.
+
+---
+
+## Task
+
+You are picking up an existing Python project (`yt_uploader/`, ~622 lines, 8 modules). The project currently polls Google Drive folders for MP4 + TXT pairs and auto-uploads them to YouTube with AI-generated metadata. We are pivoting the trigger mechanism from **Drive polling** to a **Telegram bot conversation**. Most of the upload pipeline stays intact — this is a surgical refactor, not a rewrite.
+
+## Read first, before writing any code
+
+1. **Read `HANDOFF.md` in full.** It contains the goal, why we pivoted, the editor flow, the file-by-file plan, technical decisions already made, and acceptance criteria. Do not ask me clarifying questions that are answered there.
+2. **Read `README.md`** to understand the current polling design.
+3. **Read all 8 existing Python modules** to understand what's in place. Pay attention to what `main.py` does today — your job is to split it into `bot.py` + `pipeline.py`.
+4. **Check `requirements.txt` and `.env.example`** for current dependencies and env vars.
+
+## Plan before coding
+
+After reading, produce a short plan (bullet points, max 20 lines) covering:
+
+- Order in which you'll make the changes (which file first, which last)
+- How you'll test each step locally without needing the full Google/Telegram/YouTube setup
+- Any decisions HANDOFF.md left open that you want to lock down before implementing
+
+**Wait for me to approve the plan before writing code.** Don't start implementing immediately.
+
+## What to build
+
+All of this is specified in HANDOFF.md, but headline scope:
+
+1. Create `bot.py` with `python-telegram-bot` v21+ (async). Implement `/start`, `/upload <channel>`, `/cancel`. Use `ConversationHandler` with states `AWAITING_LINK` and `AWAITING_TRANSCRIPT`.
+2. Create `pipeline.py` by extracting the upload flow from the current `main.py`. Signature: `async def run_pipeline(channel_cfg, file_id, transcript, notify_cb)`.
+3. Shrink `main.py` to a ~30-line bootstrap that loads config + env and starts the bot.
+4. Simplify `drive.py`: drop `list_mp4s`, `find_txt`, `read_text`. Keep `download`. Add `get_file_metadata(file_id)`.
+5. Rename `telegram.py` → `notify.py` (avoids collision with `python-telegram-bot`'s `telegram` module). Update imports.
+6. Update `config.yaml` to add `editors:` list and remove `drive_folder_id` per channel.
+7. Update `.env.example` — add `TELEGRAM_ADMIN_CHAT_ID`, drop `POLL_INTERVAL_SEC` and `TXT_GRACE_SEC`.
+8. Update `requirements.txt` — add `python-telegram-bot>=21.0`.
+9. Update `README.md` to describe the bot flow (not polling). Keep setup steps for Google Cloud / OAuth / Sheets as-is; just swap the trigger description.
+
+## Constraints
+
+- **Do not rewrite** `youtube.py`, `ai.py`, `sheets.py`, `state.py`, `auth.py`. They work. If you think one needs a change, ask first.
+- Keep dependencies minimal. Don't add libraries beyond `python-telegram-bot`.
+- Async throughout — the bot is async, and the pipeline should be async so it can run as a background task without blocking bot polling.
+- The Drive/YouTube/Sheets clients in the existing code use the sync `googleapiclient` library. That's fine — wrap the sync calls in `asyncio.to_thread(...)` inside `pipeline.py` so they don't block the event loop. Don't try to swap to an async Google SDK.
+- State dedup (`state.py`) must be used — key by Drive `file_id`. If the same link is submitted twice, reject with the previously-uploaded URL.
+- All user-facing bot messages in plain English, short, no emojis except ✅ / ❌ / ⚠️ for status.
+- Admin crash alerts go via `notify.py` (renamed old `telegram.py`) to `TELEGRAM_ADMIN_CHAT_ID` — separate from the bot's per-editor replies.
+
+## Drive link parser (specific)
+
+Implement as a standalone function in `bot.py` called `parse_drive_link(text: str) -> str | None`. Return the file ID or `None`. Accept:
+
+- `https://drive.google.com/file/d/FILE_ID/view?usp=sharing`
+- `https://drive.google.com/file/d/FILE_ID/view`
+- `https://drive.google.com/file/d/FILE_ID`
+- `https://drive.google.com/open?id=FILE_ID`
+- `https://drive.google.com/uc?id=FILE_ID`
+- a bare file ID (20+ chars, `[a-zA-Z0-9_-]+`)
+
+Write unit tests for this function as `tests/test_parser.py` — it's the one piece of logic brittle enough to deserve coverage.
+
+## Authorization check
+
+Implement `is_authorized(user_id: int, channel: str, config: dict) -> bool`. Returns True if the user appears in `editors:` AND either `channels: ["*"]` OR channel in their list. Write unit tests as `tests/test_auth.py`.
+
+## Testing approach
+
+You can't run the full stack end-to-end locally without Google + Telegram setup. That's fine. Test what you can:
+
+- Unit tests for `parse_drive_link` and `is_authorized`
+- Dry run the bot locally: `python main.py` should start, connect to Telegram if `TELEGRAM_BOT_TOKEN` is set, accept messages. Use a throwaway bot for this.
+- Mock the pipeline in a dev mode (`DRY_RUN=1` env var) that logs what would happen instead of calling Google APIs. Useful for bot UX testing.
+
+Don't over-invest in tests. Two focused unit tests + one dry-run mode is enough.
+
+## Deliverables when done
+
+- All files modified/created per HANDOFF.md
+- `tests/` directory with two test files, passing via `pytest`
+- A short **CHANGES.md** summarizing what you changed, any deviations from HANDOFF.md, and known limitations
+- Updated README.md
+
+## What success looks like
+
+I paste the existing `client_secret.json`, existing `tokens/token_*.json` files, and a filled-in `.env` + `config.yaml` into the project, run `python main.py`, message the bot from my Telegram account, and an MP4 ends up on YouTube as Private with AI-generated metadata.
+
+## Ask questions if
+
+- HANDOFF.md contradicts existing code in a way you can't resolve
+- You think a file I marked "keep as-is" actually needs a change
+- A design decision isn't clear from the doc
+
+Otherwise: plan → wait for approval → build → report.
+
+Start by reading HANDOFF.md.
+
+
+we will need a trigger tho right or does google drive has a trigger when a video gets uploaded bc how would we know
+
+3:21 PM
+
+Examined n8n's Google Drive trigger capabilities and polling mechanics
+Examined n8n's Google Drive trigger capabilities and polling mechanics
+Yeah, n8n has a native Google Drive Trigger node — that's what the plan is already using (step 1 in the node list).
+
+How it works:
+
+Point it at a specific folder (e.g. the channel's upload folder)
+Event: "File Created"
+Filter by MIME type = video/mp4
+It polls Drive's API on an interval you set (1 min, 5 min, etc.)
+So it's not a true push/webhook — it's polling under the hood. Drive does have a proper push API (files.watch) that sends real webhooks, but n8n's built-in node doesn't use it. For this use case polling is fine — nobody cares if the upload starts 60 seconds later.
+
+A few practical notes:
+
+Polling interval matters for the TXT race condition. If you poll every 1 min and uploader drops MP4 then TXT within that window, both show up in the same poll — no race. If MP4 lands at 11:00:30 and TXT at 11:01:30, MP4 gets picked up alone at 11:01:00 poll → alert fires → TXT arrives orphaned. So either:
+
+Set poll to 2-5 min (gives uploader buffer time), or
+Add a "wait 90s then re-check for TXT" branch before alerting
+Trigger fires on partial uploads too. Drive marks the file as "created" when upload starts, not when it finishes. For a 1GB video this matters — you can trigger on a half-uploaded file. Mitigation: check file.size stability, or have the Download node retry on failure, or poll less aggressively so upload finishes between polls.
+
+Trigger only sees what it has permission to. Make sure the Google account running the n8n credential has access to the folder. Sounds obvious but bites people with shared drives.
+
+Alternative if you ever want real-time: Drive push notifications → webhook node in n8n. More setup (domain verification, channel renewal every 7 days max), not worth it here.
+
+bro what if i do this in python with a telegram bot like which is easier to finish today
+
+3:22 PM
+Honest answer: n8n is faster to finish today. Not close.
+
+Here's why:
+
+n8n — the hard parts are already nodes:
+
+Google Drive OAuth → click, authorize, done
+YouTube upload with resumable chunks for big files → one node
+Google Sheets read/write → one node
+Telegram send → one node
+Retry/error handling → built in
+You're wiring boxes together. 3-4 hours realistic if you follow the template.
+
+Python + Telegram bot — you're writing all of that:
+
+google-auth + OAuth flow for Drive and YouTube (different scopes, two separate flows)
+Drive polling loop or files.watch webhook handler
+YouTube resumable upload logic (MediaFileUpload with chunking, retry on 5xx, handle quota 403s)
+Sheets API client + dedup logic
+AI API call
+Telegram bot (python-telegram-bot or raw API)
+Process supervisor (systemd/pm2) so it survives reboots
+Logging, error handling, token refresh
+Realistic: 1-2 full days if you've done Google APIs before. 3+ if you haven't. YouTube resumable upload alone is a 2-hour rabbit hole the first time.
+
+Where Python wins:
+
+You need logic n8n can't express cleanly (complex branching, custom retry strategies)
+You already have a Django/FastAPI service to bolt it into
+Long-term maintainability matters more than ship speed
+You hate visual workflows
+Where n8n wins:
+
+Today.
+Multiple channels (duplicate workflow, swap creds — 5 min per channel vs. refactoring Python config)
+Non-devs need to tweak the AI prompt or add a channel later
+You want error alerts and execution history for free
+Given your stack (Django-heavy, ERA sprint incoming, VCE deploy pending) — n8n. You don't need another Python service to babysit.
+
+Only flip to Python if: (a) this becomes a product, or (b) n8n's YouTube node has a bug that blocks you. Build in n8n today, rewrite later if you actually need to.
+
+What's driving the question — n8n setup friction, or preference for code?
+
+1776688291126_image.png
+
+{ "name": "Automate YouTube uploads with AI-generated metadata from Google Drive", "nodes": [ { "parameters": { "operation": "download", "fileId": { "__rl": true, "mode": "id", "value": "={{ $json.id }}" }, "options": {}
+
+pasted
+
+bro, I have already bought a server added n8n created account workflow as you can see in the picture and also the the Json of the n8n ... but then it has errors and not even code lol and like idk i felt de motivated to learn yk
+
+3:31 PM
+
+Diagnosed setup placeholders as normal configuration, not actual errors
+Diagnosed setup placeholders as normal configuration, not actual errors
+bro those aren't errors errors — that's just an unconfigured node. look at the panel:
+
+"No credentials yet" → you haven't connected a Google account yet
+"YOUR_FOLDER_ID_HERE" → literal placeholder, needs the real folder ID
+"workflow has issues" → n8n's way of saying "fill in the required fields"
+The workflow is doing exactly what it should on day 1 of setup. This is not a you-can't-do-this wall, this is the "please plug in your Google account" wall. Every n8n template behaves this way when imported.
+
+30-minute unlock path:
+
+Click the "New Video?" node → "Set up credential" → sign in with the Google account that owns the Drive folder. This opens OAuth, you authorize, done.
+Create a folder in that Google Drive called uploads-wiserice (or whatever). Open it. The URL looks like drive.google.com/drive/folders/1aB2cD3eF... — copy that last part, paste it in the Folder field.
+Hit "Fetch Test Event" with a dummy MP4 in the folder. It'll return the file object. Green checkmark.
+That's it. Once the trigger works, every other node just needs its own credentials wired (YouTube OAuth, Sheets, Telegram, OpenAI). Same pattern for each. Nothing in this workflow requires you to write code — the one Code node for MIME fix is 4 lines and I can give it to you when you get there.
+
+The demotivation is because red boxes look like failure. They're not. You've already done the hard part — droplet, n8n running, workflow imported, structure laid out. The learning curve is behind you. What's left is clicking through OAuth screens.
+
+Want me to walk you through the credential setup for the Drive trigger right now, screen by screen? Or you want to push through it yourself and come back if it breaks?
+
+1776688988799_image.png
+bro imagine i am at the first workflow and there are so many things i cant send you everything like
+
+3:43 PM
+totally fair. and you don't need to send me everything — you just need to get past this one screen. once you do Google OAuth once, you've done it forever. every other Google service (YouTube, Sheets) uses the exact same pattern.
+
+Two things to fix first, then we do OAuth:
+
+Problem 1: that Redirect URL is wrong
+It says http://localhost:5678/... — that won't work because n8n is on your droplet, not your laptop. Google will reject the callback.
+
+You need it to say: http://64.23.226.177:5678/rest/oauth2-credential/callback
+
+Fix: on your droplet, set the env var WEBHOOK_URL=http://64.23.226.177:5678/ (or N8N_EDITOR_BASE_URL) and restart n8n. Then reopen this credential screen and the Redirect URL will update.
+
+(Ideally you'd put a domain + HTTPS on this later, but IP works for now to get unblocked.)
+
+Problem 2: you don't have Client ID / Secret yet
+Those come from Google Cloud Console. Here's the exact path:
+
+Go to console.cloud.google.com
+Top bar → Create Project → name it wiserice-n8n (or whatever)
+Left menu → APIs & Services → Library → search "Google Drive API" → Enable
+Same library → search "YouTube Data API v3" → Enable (do it now, saves a trip)
+Left menu → APIs & Services → OAuth consent screen
+User type: External
+App name: anything
+Support email: your email
+Scopes: skip for now, click through
+Test users: add your own Gmail (important — otherwise OAuth will block you)
+Left menu → APIs & Services → Credentials → Create Credentials → OAuth client ID
+Application type: Web application
+Authorized redirect URIs: paste http://64.23.226.177:5678/rest/oauth2-credential/callback
+Create
+Google shows you Client ID and Client Secret → copy both
+Paste into n8n's credential screen → click Sign in with Google at the bottom
+Pick your Google account → approve → done
+Do Problem 1 first (fix the redirect URL on the droplet), otherwise step 6 won't accept localhost and you'll have to redo it.
+
+Tell me which step you're on and I'll unblock it. Don't try to do the whole thing silently — it's faster to ping me per step than to get stuck for an hour.
+
+Which one — the WEBHOOK_URL env var fix, or are you already in Google Cloud Console?
+
+fuckkk it man python lmao pleaseee like what is my downside here ... like like this is for many channerls
+
+4:00 PM
+lmao okay fair, I hear you. Let me be honest with you both ways:
+
+Real downsides of Python for this
+1. You're writing ~400-600 lines of glue code. Drive polling, YouTube resumable upload (this one sucks the first time), Sheets client, Telegram bot, AI call, orchestration, logging, retries. Not hard code — just a lot of small pieces that all have to work together.
+
+2. YouTube resumable upload is the one actually tricky part. Files over ~5MB need chunked upload with retry-on-5xx logic. Google's MediaFileUpload handles most of it but you'll spend 1-2 hours the first time debugging quota errors and auth scopes.
+
+3. OAuth is OAuth. You still need Google Cloud Console, Client ID, Client Secret, consent screen, test users — same setup you're stuck on right now in n8n. Python doesn't skip this. You'll hit the exact same screen, just in a different shape.
+
+4. Per-channel scaling = more code, not more clicks. In n8n: duplicate workflow, swap creds, done. In Python: either a config file with N channel entries + a loop, or you spin up N bot instances. Doable but you're the one maintaining it.
+
+5. No free execution history / error UI. When something fails at 3am on channel 3, n8n shows you which node died with full input/output. Python = you're grepping logs.
+
+6. Process supervision. python main.py dies when SSH closes. You need systemd or pm2 or Docker. Another thing to learn/set up.
+
+Real upsides of Python for YOU specifically
+You already know Django. You'll read your own code in 6 months.
+No "red box" demotivation — errors are stack traces you can google
+Full control, no n8n version quirks
+If it becomes a product later, you're not rewriting
+Here's the honest take
+The OAuth wall you're hitting is not an n8n problem. It's a Google Cloud Console problem. You will hit the identical wall in Python — same Client ID, same Client Secret, same consent screen, same test users.
+
+If you switch to Python thinking you escape it, you'll rage-quit twice.
+
+What I'd actually do in your shoes
+Pick one of these, commit 2 hours, don't flip:
+
+Option A (n8n, today): I walk you through Google Cloud Console right now, screen by screen. 20 min to get Client ID. 10 min to paste it in n8n. OAuth done. Then we do one channel end-to-end. Multi-channel = 5 min copy-paste per channel later.
+
+Option B (Python, weekend): I give you a working single-file Python script (~300 lines) that does: watch Drive folder → download MP4+TXT → upload YouTube → AI metadata → update → Sheets log → Telegram. You configure channels via a YAML file. You still do Google Cloud Console OAuth (unavoidable), but then everything else is just running the script.
+
+Option B is more work but maybe more motivating for you because it's Django-shaped territory. You'll feel in control instead of clicking through foreign UI.
+
+Real talk on time:
+
+n8n path: 2 hours if OAuth cooperates, 4 if it doesn't
+Python path: 1 full day minimum, realistic 1.5 days with debugging
+Given your ERA sprint + VCE deploy this week, n8n is still the right call technically. But if Python makes you actually finish vs. giving up — Python wins by default because a working ugly thing beats an elegant unfinished thing.
+
+Which one, and I'll stop talking and start helping?
+
+bro lmao write the full script and send it to me like full shiit and i will show you how long it takes
+
+one thing tho .. what is the trigger here now?
+
+4:28 PM
+Good catch — there's no trigger. It's a polling loop, same as n8n's Drive Trigger actually is under the hood.
+
+Look at main.py bottom:
+
+python
+while True:
+    for ch in cfg["channels"]:
+        process_channel(ch, state, sheets)
+    time.sleep(POLL_INTERVAL_SEC)   # 120 sec default
+That's it. Every 2 minutes, for every channel, it asks Drive "any MP4s in this folder?" via drive.list_mp4s(). If yes, checks SQLite — already processed? skip. Not processed? check for matching TXT. Both present? go.
+
+So the "trigger" is: the script itself running continuously + a Drive API call every 2 min.
+
+That's why it needs systemd (the yt_uploader.service file) — so the loop keeps running forever. systemctl enable --now yt_uploader = "start it now and restart on boot / on crash."
+
+Why polling, not webhooks:
+
+Drive does support real push notifications (files.watch API). But:
+
+Needs a public HTTPS endpoint on your droplet (domain + SSL cert)
+Channels expire every 7 days max — you'd need renewal logic
+For uploads-per-day volume, 2-min polling latency is invisible
+n8n's Drive Trigger polls too. You're not losing anything.
+
+What you can tune in .env:
+
+POLL_INTERVAL_SEC=120    # how often to check Drive (lower = more API calls)
+TXT_GRACE_SEC=180        # how long to wait for TXT before alerting
+If you want faster reaction, drop POLL_INTERVAL_SEC to 60. Drive API allows way more than that — you'll be nowhere near quota at 1 call/min/channel.
+
+If you want it to really feel instant: there's no free way. Webhooks need a domain. Not worth it for your use case.
+
+Mental model:
+
+n8n: "A workflow engine that has a node called 'Drive Trigger' that polls every minute."
+
+Python script: "A while-loop that polls every 2 minutes and does the exact same API call, then runs the rest of the steps in the same process."
+
+Same mechanism. Different wrapper.
+
+Make sense?
+
+what if we make a telegram bot and then send it the google link when the editors finish uploading yeah? what say you or ?
+
+4:29 PM
+oh that's actually a better design. Genuinely. Let me tell you why before I get too excited:
+
+Why this is smarter than polling Drive
+1. No race condition. Editor uploads MP4 + TXT to Drive, waits till both are done, sends you one Telegram message. No grace period guessing, no "TXT arrived 90 seconds late" problem. The editor confirms readiness by the act of sending.
+
+2. Instant trigger. Telegram bots get webhook-style push. No 2-min polling lag.
+
+3. Explicit workflow. Right now Drive polling is implicit — editor might be mid-upload, might have forgotten the TXT, might have uploaded to the wrong folder. With a bot, the editor signals intent: "this one's ready, ship it."
+
+4. Multi-editor friendly. Each editor has their own Telegram. They just DM the bot. You can route by who sent it (user_id → channel mapping).
+
+5. Editors can send context. "here's the file, title should emphasize X." Free metadata hint to feed into the AI prompt.
+
+6. No Drive folder management. No "which folder watches which channel." The Telegram message carries the channel.
+
+The tradeoffs (real ones)
+1. Editors have to do one extra step. Upload → copy link → paste in Telegram. Not automatic. For trusted editors this is fine. For flaky ones it's a new place to forget.
+
+2. You need Drive link parsing. Editors might paste:
+
+https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+https://drive.google.com/open?id=FILE_ID
+a folder link (needs MP4+TXT inside)
+just the file ID
+Handle all of them. Not hard, just real.
+
+3. Permissions. The bot's service account needs read access to whatever the editor shares. Either:
+
+editor uploads to a shared Drive your account already accesses (same as before), or
+editor shares the file with your service account email (extra step for them)
+4. Bot security. Anyone who finds your bot can spam it. Whitelist user_ids in config — only approved Telegram accounts can trigger uploads.
+
+5. What does the editor send, exactly? Design choice:
+
+Option A: one Drive link to a folder → bot finds MP4 + TXT inside
+Option B: two links in one message (MP4 link + TXT link)
+Option C: link to MP4 + TXT pasted as message body (no separate file)
+Option D: editor uploads MP4 to Drive, sends link + types transcript directly in Telegram
+Option C is actually really clean — transcript is just text, no reason it needs to be a file. Editor sends:
+
+/upload wiserice
+https://drive.google.com/file/d/abc123/view
+
+Transcript:
+Hey what's up guys, today we're talking about...
+Bot parses, runs pipeline. Done.
+
+What changes in the code
+Honestly, small. Replace the polling loop with a Telegram bot listener. Everything downstream (drive.py, youtube.py, ai.py, sheets.py) stays identical. You keep 80% of what I already wrote.
+
+New file: bot.py that runs python-telegram-bot (proper SDK), listens for messages, extracts file ID, kicks off process_video().
+
+Delete: the Drive polling loop in main.py. State tracking still useful for dedup (editor sends same link twice).
+
+Rough new flow:
+
+editor → /upload <channel> <drive_link> <transcript> → bot
+       → bot validates (whitelisted user? valid channel? link parses?)
+       → bot replies "✅ received, processing"
+       → bot downloads from Drive, uploads to YT, AI metadata, sheets log
+       → bot replies with YouTube link when done
+       → if fail, bot replies with error
+My take
+Yes, do this instead. Especially because:
+
+You already have Telegram in the stack
+The upload trigger problem is what made you hit walls in the first place
+Editors are a known, small, trusted group (not random internet users)
+It's more Django-shaped (request → process → respond) which matches how your brain works
+Want me to rewrite main.py + add bot.py with this design? ~30 min of work on my end, keeps ~400 lines of what I already wrote intact. Or do you want to tweak the design first — specifically what does the editor send in one message?
+
+I am going to give it to claude CC so make a prompt make a docuemnt as well on what we plan to do what is done the goal etc i like the option 3 we make it upload the link and then ask the user to send the body as well then we submit in the bot so that is good as welll make a md and like do all this with the next prompt
